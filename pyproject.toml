@@ -1,0 +1,14 @@
+[project]
+name = "flow"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "llvmlite>=0.42",
+    "numba>=0.59",
+    "numpy>=2.4.6",
+    "parakeet-mlx>=0.5.2",
+    "requests>=2.34.2",
+    "sounddevice>=0.5.5",
+    "soundfile>=0.14.0",
+]
