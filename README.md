@@ -62,6 +62,18 @@ open app/Flow.app
 #    (Manual alternative: uv run flow.py watch)
 ```
 
+## Start / stop
+
+```bash
+./flowctl start     # bring everything up (Ollama + Flow.app + watcher)
+./flowctl stop      # stop everything now (returns at next login)
+./flowctl restart   # e.g. after editing flow.py or rebuilding the app
+./flowctl status    # what's running
+```
+
+`stop` properly unloads the launchd jobs (a plain kill would be resurrected
+by KeepAlive). Ollama is left running — it's a shared service and idles free.
+
 ## Daily use
 
 Three interactions, all system-wide:
