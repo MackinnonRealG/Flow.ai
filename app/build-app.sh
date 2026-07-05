@@ -10,9 +10,10 @@ mkdir -p .build
 swiftc -O -swift-version 5 Sources/Flow/*.swift -o .build/Flow
 
 rm -rf Flow.app
-mkdir -p Flow.app/Contents/MacOS
+mkdir -p Flow.app/Contents/MacOS Flow.app/Contents/Resources
 cp .build/Flow Flow.app/Contents/MacOS/Flow
 cp Info.plist Flow.app/Contents/Info.plist
+cp AppIcon.icns Flow.app/Contents/Resources/AppIcon.icns
 
 # Ad-hoc sign so macOS TCC permissions (mic, input monitoring) stick to a
 # stable identity across rebuilds.
