@@ -49,6 +49,10 @@ FLOW_DIR = Path.home() / "Flow"
 DB_PATH = FLOW_DIR / "flow.db"
 RECORDINGS_DIR = FLOW_DIR / "recordings"
 OUTBOX_DIR = FLOW_DIR / "outbox"  # Flow.app consumes these and types the text
+# iPhone quick-access inbox: an iOS Shortcut saves voice memos here via
+# iCloud Drive; we transcribe them and write the text back alongside.
+ICLOUD_INBOX = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/Flow"
+PHONE_AUDIO_EXTS = {".m4a", ".wav", ".mp3", ".aac", ".caf"}
 LEARN_EVERY = 5  # watcher re-learns the speech profile every N new dictations
 
 SCHEMA = """
@@ -358,6 +362,39 @@ def prune_recordings(conn: sqlite3.Connection) -> None:
               " (transcripts kept).", flush=True)
 
 
+def scan_phone_inbox(conn: sqlite3.Connection, known: set) -> None:
+    """Transcribe voice memos the iPhone Shortcut dropped into iCloud Drive.
+
+    The transcript is written back next to the audio as <name>.txt (so the
+    phone can read it in Files/Shortcuts), and the audio moves to Processed/.
+    Phone dictations are never typed into the Mac's focused app.
+    """
+    if not ICLOUD_INBOX.is_dir():
+        return
+    for src in sorted(ICLOUD_INBOX.iterdir()):
+        if not src.is_file() or src.suffix.lower() not in PHONE_AUDIO_EXTS:
+            continue
+        # skip files still syncing down from iCloud
+        if src.stat().st_size == 0 or time.time() - src.stat().st_mtime < 2.0:
+            continue
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        wav = RECORDINGS_DIR / f"iphone-{stamp}.wav"
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(src), "-ar", str(SAMPLE_RATE), "-ac", "1", str(wav)],
+            capture_output=True,
+        )
+        if r.returncode != 0:
+            print(f"ffmpeg could not convert {src.name}; leaving it in place", flush=True)
+            continue
+        final = process(conn, str(wav), notify_user=True,
+                        meta={"app_name": "iPhone", "mode": "dictate"})
+        known.add(str(wav.resolve()))  # main loop must not reprocess + inject it
+        (ICLOUD_INBOX / f"{src.stem}.txt").write_text(final or "(silence)")
+        processed = ICLOUD_INBOX / "Processed"
+        processed.mkdir(exist_ok=True)
+        src.rename(processed / src.name)
+
+
 def cmd_watch(conn: sqlite3.Connection, copy_clipboard: bool = False,
               inject: bool = True) -> None:
     RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -389,6 +426,7 @@ def cmd_watch(conn: sqlite3.Connection, copy_clipboard: bool = False,
             if since_learn >= LEARN_EVERY:
                 learn(conn)
                 since_learn = 0
+        scan_phone_inbox(conn, known)
         if time.time() - last_prune > 3600:
             prune_recordings(conn)
             last_prune = time.time()

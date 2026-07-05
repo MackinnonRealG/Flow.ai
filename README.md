@@ -105,6 +105,31 @@ FLOW_STT=mlx-community/parakeet-tdt-0.6b-v3 ...  # multilingual STT (drop-in)
 FLOW_KEEP_DAYS=7 ...           # audio retention (default 30 days; transcripts kept forever)
 ```
 
+## Dictate from your iPhone
+
+No iOS app needed: an iOS **Shortcut** records your voice into iCloud Drive;
+the Mac watcher transcribes it with the full pipeline (cleanup, dictionary,
+history) and writes the text back next to it for your phone to read.
+
+Build the Shortcut once (2 minutes, on the iPhone):
+
+1. Shortcuts app → **+** → name it **Flow Dictate**
+2. Add action **Record Audio** (set *Finish Recording: On Tap*)
+3. Add action **Save File** → destination **iCloud Drive → Flow** (turn
+   *Ask Where To Save* off)
+4. *(Optional read-back)* add **Wait 15 s** → **Get File** from
+   `Flow/<latest>.txt` → **Copy to Clipboard**
+
+Then put it on your quick-access surfaces: **Action Button** (Settings →
+Action Button → Shortcut), **Control Center** (add a "Shortcut" control),
+Lock Screen widget, or a Home Screen icon.
+
+Notes: transcription happens when the Mac is awake and online; iCloud sync
+adds a few seconds each way. Transcripts land in `Files → iCloud Drive →
+Flow` as `.txt`; processed audio is archived to `Flow/Processed/`. A native
+iOS app (custom-keyboard style, like Wispr Flow's) would need Xcode plus an
+Apple Developer account and is a possible future milestone.
+
 ## The speech memory
 
 Every dictation is logged to `~/Flow/flow.db` (SQLite):
