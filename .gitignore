@@ -18,3 +18,4 @@ outbox/
 test.wav
 app/.build/
 app/Flow.app/
+logs/

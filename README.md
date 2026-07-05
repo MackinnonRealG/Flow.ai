@@ -54,8 +54,12 @@ open app/Flow.app
 # 4. Grant permissions in System Settings → Privacy & Security:
 #    Microphone, Input Monitoring, Accessibility — then relaunch Flow.app
 
-# 5. Start the watcher (leave running)
-uv run flow.py watch
+# 5. Always-on: both processes are LaunchAgents (installed) — they start at
+#    login and the watcher self-heals if it dies:
+#      ~/Library/LaunchAgents/com.connorsandford.flow.app.plist
+#      ~/Library/LaunchAgents/com.connorsandford.flow.watcher.plist
+#    Watcher logs: ~/Flow/logs/watcher.log
+#    (Manual alternative: uv run flow.py watch)
 ```
 
 ## Daily use
@@ -69,6 +73,7 @@ uv run flow.py watch --copy    # also copy each transcription to clipboard
 uv run flow.py watch --no-inject  # log + notify only
 uv run flow.py history -n 20   # read back your dictation history
 uv run flow.py learn           # rebuild the speech profile now
+uv run flow.py correct "La Calhest" "localhost"   # teach it a mishearing
 uv run flow.py dict-add "Kubernetes" "Sandford"   # teach it your words
 uv run flow.py dict-remove "..." ; uv run flow.py dict-list
 uv run flow.py record -s 10    # mic test without the app
@@ -128,6 +133,8 @@ heart of the product: filler removal, punctuation, spoken self-corrections
 - ✅ **M1** — menu-bar app: hold-to-talk hotkey + 16 kHz capture
 - ✅ **Logging + memory** — SQLite history, personal dictionary, style profile
 - ✅ **M2** — auto-typing into the focused app (hybrid: Python brain, Swift arm)
-- ⬜ **M3** — latency & robustness polish (see RECOMMENDATIONS.md)
+- 🔶 **M3** — polish, in progress: LaunchAgents (always-on, self-healing) ✅,
+  short-utterance fast path (~1.5s, no LLM) ✅, learn-from-corrections
+  (`flow.py correct`) ✅; FluidAudio native STT pending Xcode install
 - ⬜ **M4** — context awareness: per-app tone matching
 - ⬜ **M5** — command mode: voice-edit selected text

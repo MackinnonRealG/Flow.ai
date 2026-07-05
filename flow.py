@@ -15,6 +15,7 @@ Usage:
   uv run flow.py process X.wav    # transcribe + clean + log one file
   uv run flow.py record [-s 10]   # record from the mic, then process
   uv run flow.py learn            # rebuild speech profile from history now
+  uv run flow.py correct "La Calhest" "localhost"   # teach it a mishearing
   uv run flow.py history [-n 10]  # show recent dictations
   uv run flow.py dict-add TERM... # manually add dictionary terms
   uv run flow.py dict-list
@@ -23,6 +24,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -65,7 +67,20 @@ CREATE TABLE IF NOT EXISTS profile (
     value      TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
+CREATE TABLE IF NOT EXISTS corrections (
+    wrong      TEXT PRIMARY KEY,
+    right      TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
 """
+
+# Filler/correction markers: if a short utterance contains none of these, the
+# LLM cleanup pass adds nothing and gets skipped (the latency fast path).
+FILLERS = re.compile(
+    r"\b(um+|uh+|erm|like|you know|i mean|actually|basically|no wait|sort of|kind of)\b",
+    re.IGNORECASE,
+)
+FAST_PATH_MAX_WORDS = 6
 
 BASE_CLEANUP_PROMPT = """\
 You clean up raw speech-to-text transcripts for dictation. Rules:
@@ -128,7 +143,25 @@ def build_cleanup_prompt(conn: sqlite3.Connection) -> str:
     row = conn.execute("SELECT value FROM profile WHERE key = 'style_notes'").fetchone()
     if row:
         prompt += f"\nAbout this speaker: {row[0]}\n"
+    pairs = conn.execute(
+        "SELECT wrong, right FROM corrections ORDER BY created_at DESC LIMIT 20"
+    ).fetchall()
+    if pairs:
+        fixes = "; ".join(f"'{w}' means '{r}'" for w, r in pairs)
+        prompt += f"\nKnown mishearings the user has corrected — always fix these: {fixes}\n"
     return prompt
+
+
+def apply_corrections(conn: sqlite3.Connection, text: str) -> str:
+    """Deterministic post-pass: replace known mishearings the user corrected."""
+    for wrong, right in conn.execute("SELECT wrong, right FROM corrections"):
+        text = re.sub(re.escape(wrong), right, text, flags=re.IGNORECASE)
+    return text
+
+
+def needs_cleanup(raw: str) -> bool:
+    """Fast path: short utterances with no fillers skip the LLM entirely."""
+    return len(raw.split()) > FAST_PATH_MAX_WORDS or bool(FILLERS.search(raw))
 
 
 # ─── pipeline stages ─────────────────────────────────────────────────────────
@@ -188,10 +221,13 @@ def process(conn: sqlite3.Connection, wav_path: str, quiet: bool = False,
     raw, stt_s = transcribe(wav_path)
 
     cleaned, llm_s = None, None
-    if raw:
+    if raw and needs_cleanup(raw):
         t0 = time.perf_counter()
         cleaned = ollama(build_cleanup_prompt(conn), raw)
         llm_s = time.perf_counter() - t0
+    if raw:
+        # deterministic safety net over both paths for user-corrected terms
+        cleaned = apply_corrections(conn, cleaned if cleaned is not None else raw)
 
     conn.execute(
         "INSERT OR REPLACE INTO dictations (wav_path, raw, cleaned, duration_s, stt_s, llm_s)"
@@ -207,7 +243,8 @@ def process(conn: sqlite3.Connection, wav_path: str, quiet: bool = False,
         subprocess.run(["pbcopy"], input=final.encode(), check=False)
 
     if not quiet:
-        print(f"» {Path(wav_path).name}  (stt {stt_s:.2f}s, clean {llm_s or 0:.2f}s)")
+        mode = f"clean {llm_s:.2f}s" if llm_s is not None else "fast path"
+        print(f"» {Path(wav_path).name}  (stt {stt_s:.2f}s, {mode})")
         print(f"  raw:     {raw or '(silence)'}")
         if cleaned:
             print(f"  cleaned: {cleaned}")
@@ -300,6 +337,30 @@ def cmd_record(conn: sqlite3.Connection, seconds: float) -> None:
     process(conn, str(out))
 
 
+def cmd_correct(conn: sqlite3.Connection, wrong: str, right: str) -> None:
+    """Teach Flow a mishearing: fixes history, dictionary, and future cleanups."""
+    conn.execute(
+        "INSERT INTO corrections (wrong, right) VALUES (?, ?)"
+        " ON CONFLICT(wrong) DO UPDATE SET right = excluded.right,"
+        " created_at = datetime('now','localtime')",
+        (wrong, right),
+    )
+    conn.execute("INSERT OR IGNORE INTO dictionary (word, source) VALUES (?, 'correction')",
+                 (right,))
+    conn.execute("DELETE FROM dictionary WHERE word = ? AND source = 'learned'", (wrong,))
+
+    # retro-fix logged dictations that contain the mishearing
+    fixed = 0
+    for row_id, cleaned in conn.execute(
+        "SELECT id, cleaned FROM dictations WHERE cleaned LIKE '%' || ? || '%'", (wrong,)
+    ).fetchall():
+        conn.execute("UPDATE dictations SET cleaned = ? WHERE id = ?",
+                     (re.sub(re.escape(wrong), right, cleaned, flags=re.IGNORECASE), row_id))
+        fixed += 1
+    conn.commit()
+    print(f"Corrected '{wrong}' → '{right}' (dictionary updated, {fixed} past dictation(s) fixed).")
+
+
 def cmd_history(conn: sqlite3.Connection, n: int) -> None:
     rows = conn.execute(
         "SELECT created_at, duration_s, raw, cleaned FROM dictations ORDER BY id DESC LIMIT ?",
@@ -325,6 +386,8 @@ def main() -> None:
     p = sub.add_parser("process"); p.add_argument("wav")
     p = sub.add_parser("record"); p.add_argument("-s", "--seconds", type=float, default=10)
     sub.add_parser("learn")
+    p = sub.add_parser("correct")
+    p.add_argument("wrong"); p.add_argument("right")
     p = sub.add_parser("history"); p.add_argument("-n", type=int, default=10)
     p = sub.add_parser("dict-add"); p.add_argument("terms", nargs="+")
     p = sub.add_parser("dict-remove"); p.add_argument("terms", nargs="+")
@@ -340,6 +403,8 @@ def main() -> None:
         cmd_record(conn, args.seconds)
     elif args.cmd == "learn":
         learn(conn)
+    elif args.cmd == "correct":
+        cmd_correct(conn, args.wrong, args.right)
     elif args.cmd == "history":
         cmd_history(conn, args.n)
     elif args.cmd == "dict-add":

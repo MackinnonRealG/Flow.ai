@@ -6,6 +6,9 @@ impact-per-effort within each tier.
 
 ## Tier 1 — do these next (biggest wins)
 
+> Status 2026-07-05: #2, #3, #4 done. #1 pending — blocked on installing
+> Xcode from the App Store (user action; no `mas` CLI on this machine).
+
 1. **Install Xcode, then move STT into the Swift app via FluidAudio CoreML.**
    The benchmark that decided our stack showed Parakeet on the Apple Neural
    Engine at **~0.19s per utterance using ~66 MB of RAM**, versus ~0.5s and
