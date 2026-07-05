@@ -12,7 +12,7 @@ UID_N=$(id -u)
 APP_LABEL=com.connorsandford.flow.app
 WATCHER_LABEL=com.connorsandford.flow.watcher
 AGENTS_DIR="$HOME/Library/LaunchAgents"
-APP="$HOME/Flow/app/Flow.app"
+APP="/Applications/Flow.app"
 
 loaded() { launchctl print "gui/$UID_N/$1" &>/dev/null; }
 

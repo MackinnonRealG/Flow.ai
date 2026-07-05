@@ -49,7 +49,7 @@ cd ~/Flow && uv sync
 
 # 3. Build and launch the menu-bar app
 ./app/build-app.sh
-open app/Flow.app
+open /Applications/Flow.app
 
 # 4. Grant permissions in System Settings → Privacy & Security:
 #    Microphone, Input Monitoring, Accessibility — then relaunch Flow.app

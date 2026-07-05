@@ -18,5 +18,8 @@ cp Info.plist Flow.app/Contents/Info.plist
 # stable identity across rebuilds.
 codesign --force -s - Flow.app
 
-echo "Built $(pwd)/Flow.app"
-echo "Launch with: open $(pwd)/Flow.app"
+# keep the installed copy in sync (this is what launches at login)
+ditto Flow.app /Applications/Flow.app
+
+echo "Built $(pwd)/Flow.app and installed to /Applications/Flow.app"
+echo "Relaunch with: killall Flow; open /Applications/Flow.app"
