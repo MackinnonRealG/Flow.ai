@@ -1,17 +1,25 @@
 import AppKit
 import CoreGraphics
 
-/// Watches for press/release of a single modifier key system-wide via a
+enum HotkeyKind {
+    case dictate  // Right ⌥ — hold to talk, double-tap to lock hands-free
+    case command  // Right ⌘ — hold to speak an edit for the selected text
+}
+
+/// Watches for press/release of Flow's modifier hotkeys system-wide via a
 /// listen-only CGEventTap. Requires the Input Monitoring permission.
 final class HotkeyListener {
-    /// Right Option. Left Option is 58; right Command is 54.
-    private let keyCode: CGKeyCode = 61
+    /// keycode → (kind, the modifier flag that reflects its state)
+    private let keys: [CGKeyCode: (kind: HotkeyKind, flag: CGEventFlags)] = [
+        61: (.dictate, .maskAlternate),  // right Option
+        54: (.command, .maskCommand),    // right Command
+    ]
 
-    var onPress: (() -> Void)?
-    var onRelease: (() -> Void)?
+    var onPress: ((HotkeyKind) -> Void)?
+    var onRelease: ((HotkeyKind) -> Void)?
 
     private var eventTap: CFMachPort?
-    private var isDown = false
+    private var isDown: Set<CGKeyCode> = []
 
     /// Returns false if the tap could not be created (permission missing).
     func start() -> Bool {
@@ -43,14 +51,17 @@ final class HotkeyListener {
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
             return
         }
-        guard type == .flagsChanged,
-              CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode)) == keyCode
-        else { return }
+        guard type == .flagsChanged else { return }
+        let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+        guard let (kind, flag) = keys[code] else { return }
 
-        let pressed = event.flags.contains(.maskAlternate)
-        guard pressed != isDown else { return }
-        isDown = pressed
-        let action = pressed ? onPress : onRelease
-        DispatchQueue.main.async { action?() }
+        let pressed = event.flags.contains(flag)
+        if pressed && !isDown.contains(code) {
+            isDown.insert(code)
+            DispatchQueue.main.async { self.onPress?(kind) }
+        } else if !pressed && isDown.contains(code) {
+            isDown.remove(code)
+            DispatchQueue.main.async { self.onRelease?(kind) }
+        }
     }
 }

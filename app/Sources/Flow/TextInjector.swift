@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 
 /// Types text into the frontmost app: put it on the pasteboard, synthesize
 /// ⌘V, then restore whatever was on the pasteboard before. Requires the
@@ -15,15 +16,11 @@ final class TextInjector {
         pb.clearContents()
         pb.setString(text, forType: .string)
 
-        guard trusted else { return false } // fallback: leave it on the clipboard
+        // fallback: leave it on the clipboard when we can't or shouldn't type —
+        // secure input (password fields) means paste would be silently eaten
+        guard trusted, !IsSecureEventInputEnabled() else { return false }
 
-        let src = CGEventSource(stateID: .combinedSessionState)
-        let vDown = CGEvent(keyboardEventSource: src, virtualKey: 9, keyDown: true) // 9 = V
-        let vUp = CGEvent(keyboardEventSource: src, virtualKey: 9, keyDown: false)
-        vDown?.flags = .maskCommand
-        vUp?.flags = .maskCommand
-        vDown?.post(tap: .cghidEventTap)
-        vUp?.post(tap: .cghidEventTap)
+        postKeystroke(virtualKey: 9, flags: .maskCommand) // ⌘V
 
         // restore the previous clipboard once the paste has landed
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -31,5 +28,38 @@ final class TextInjector {
             if let saved { pb.setString(saved, forType: .string) }
         }
         return true
+    }
+
+    /// Copy the current selection in the frontmost app (⌘C) and return it.
+    /// Restores the clipboard. Returns "" when nothing is selected.
+    func captureSelection() -> String {
+        guard trusted else { return "" }
+        let pb = NSPasteboard.general
+        let saved = pb.string(forType: .string)
+        let before = pb.changeCount
+        postKeystroke(virtualKey: 8, flags: .maskCommand) // ⌘C
+
+        // wait briefly for the frontmost app to service the copy
+        var selection = ""
+        for _ in 0..<10 {
+            usleep(30_000)
+            if pb.changeCount != before {
+                selection = pb.string(forType: .string) ?? ""
+                break
+            }
+        }
+        pb.clearContents()
+        if let saved { pb.setString(saved, forType: .string) }
+        return selection
+    }
+
+    private func postKeystroke(virtualKey: CGKeyCode, flags: CGEventFlags) {
+        let src = CGEventSource(stateID: .combinedSessionState)
+        let down = CGEvent(keyboardEventSource: src, virtualKey: virtualKey, keyDown: true)
+        let up = CGEvent(keyboardEventSource: src, virtualKey: virtualKey, keyDown: false)
+        down?.flags = flags
+        up?.flags = flags
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
     }
 }

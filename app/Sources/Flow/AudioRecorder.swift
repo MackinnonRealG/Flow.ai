@@ -8,6 +8,12 @@ final class AudioRecorder {
     private var converter: AVAudioConverter?
     private(set) var isRecording = false
 
+    // Voice activity (for hands-free auto-stop): peak-based, cheap.
+    private(set) var startedAt: Date?
+    private(set) var lastVoiceAt: Date?
+    private(set) var voiceDetected = false
+    private let voiceThreshold: Float = 0.02
+
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false
     )!
@@ -41,6 +47,9 @@ final class AudioRecorder {
         engine.prepare()
         try engine.start()
         isRecording = true
+        startedAt = Date()
+        lastVoiceAt = nil
+        voiceDetected = false
     }
 
     /// Stops capture and finalizes the file.
@@ -69,6 +78,14 @@ final class AudioRecorder {
         }
         if error == nil, out.frameLength > 0 {
             try? file.write(from: out)
+            if let data = out.floatChannelData?[0] {
+                var peak: Float = 0
+                for i in 0..<Int(out.frameLength) { peak = max(peak, abs(data[i])) }
+                if peak > voiceThreshold {
+                    lastVoiceAt = Date()
+                    voiceDetected = true
+                }
+            }
         }
     }
 }

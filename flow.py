@@ -37,7 +37,12 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 # 7b holds onto full sentences far better than 3b, which tends to drop
 # clauses. Override with e.g. FLOW_LLM=qwen2.5:3b for speed over fidelity.
 OLLAMA_MODEL = os.environ.get("FLOW_LLM", "qwen2.5:7b")
-STT_MODEL = "mlx-community/parakeet-tdt-0.6b-v2"
+# Parakeet v2 is English-only; for multilingual use FLOW_STT with e.g.
+# mlx-community/parakeet-tdt-0.6b-v3 (drop-in).
+STT_MODEL = os.environ.get("FLOW_STT", "mlx-community/parakeet-tdt-0.6b-v2")
+# Recordings older than this are deleted once transcribed (transcripts are
+# kept forever in the DB). Audio is mostly liability, not value.
+KEEP_DAYS = float(os.environ.get("FLOW_KEEP_DAYS", "30"))
 SAMPLE_RATE = 16_000
 
 FLOW_DIR = Path.home() / "Flow"
@@ -101,6 +106,13 @@ Example output:
   So the deadline is Thursday, and we need three people on it.
 """
 
+COMMAND_PROMPT = """\
+You edit text according to a spoken instruction. Apply the instruction to the
+text faithfully: keep the original meaning unless the instruction says
+otherwise, and match the original's language. Output ONLY the edited text —
+no preamble, no quotes, no explanation.
+"""
+
 LEARN_PROMPT = """\
 You analyze a user's dictation transcripts to build a speech profile. From the
 transcripts below, extract:
@@ -127,11 +139,37 @@ def db() -> sqlite3.Connection:
     FLOW_DIR.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(SCHEMA)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(dictations)")}
+    if "app" not in cols:
+        conn.execute("ALTER TABLE dictations ADD COLUMN app TEXT")
+    if "mode" not in cols:
+        conn.execute("ALTER TABLE dictations ADD COLUMN mode TEXT DEFAULT 'dictate'")
     return conn
 
 
-def build_cleanup_prompt(conn: sqlite3.Connection) -> str:
+def read_meta(wav_path: str) -> dict:
+    """Sidecar written by Flow.app at record time: app context + mode."""
+    meta_path = Path(str(wav_path)[: -len(".wav")] + ".meta.json")
+    if not meta_path.exists():
+        return {}
+    try:
+        return json.loads(meta_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    finally:
+        meta_path.unlink(missing_ok=True)
+
+
+def build_cleanup_prompt(conn: sqlite3.Connection, app_name: str | None = None) -> str:
     prompt = BASE_CLEANUP_PROMPT
+    if app_name:
+        prompt += (
+            f"\nThe user is dictating into the app \"{app_name}\". Match that"
+            " app's typical register — casual and brief for chat apps"
+            " (Slack, Messages, Discord), professional for email (Mail,"
+            " Outlook), plain and literal for editors, terminals, and"
+            " documents. Adjust tone only; never add or remove content.\n"
+        )
     words = [r[0] for r in conn.execute("SELECT word FROM dictionary ORDER BY word")]
     if words:
         prompt += (
@@ -215,24 +253,36 @@ def notify(message: str, title: str = "Flow") -> None:
 
 
 def process(conn: sqlite3.Connection, wav_path: str, quiet: bool = False,
-            notify_user: bool = False, copy_clipboard: bool = False) -> str | None:
+            notify_user: bool = False, copy_clipboard: bool = False,
+            meta: dict | None = None) -> str | None:
     """Transcribe + clean one recording and log it. Returns the final text."""
     wav_path = str(Path(wav_path).resolve())
+    meta = meta or {}
+    app_name = meta.get("app_name")
+    mode = meta.get("mode", "dictate")
     raw, stt_s = transcribe(wav_path)
 
     cleaned, llm_s = None, None
-    if raw and needs_cleanup(raw):
+    if raw and mode == "command":
+        # raw is a spoken instruction; apply it to the captured selection
+        selection = meta.get("selection", "")
         t0 = time.perf_counter()
-        cleaned = ollama(build_cleanup_prompt(conn), raw)
+        cleaned = ollama(COMMAND_PROMPT,
+                         f"Instruction: {raw}\n\nText to edit:\n{selection}")
+        llm_s = time.perf_counter() - t0
+    elif raw and needs_cleanup(raw):
+        t0 = time.perf_counter()
+        cleaned = ollama(build_cleanup_prompt(conn, app_name), raw)
         llm_s = time.perf_counter() - t0
     if raw:
         # deterministic safety net over both paths for user-corrected terms
         cleaned = apply_corrections(conn, cleaned if cleaned is not None else raw)
 
     conn.execute(
-        "INSERT OR REPLACE INTO dictations (wav_path, raw, cleaned, duration_s, stt_s, llm_s)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (wav_path, raw, cleaned, wav_duration(wav_path), stt_s, llm_s),
+        "INSERT OR REPLACE INTO dictations"
+        " (wav_path, raw, cleaned, duration_s, stt_s, llm_s, app, mode)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (wav_path, raw, cleaned, wav_duration(wav_path), stt_s, llm_s, app_name, mode),
     )
     conn.commit()
 
@@ -294,6 +344,20 @@ def learn(conn: sqlite3.Connection) -> None:
 
 # ─── commands ────────────────────────────────────────────────────────────────
 
+def prune_recordings(conn: sqlite3.Connection) -> None:
+    """Delete transcribed audio older than KEEP_DAYS; transcripts stay in the DB."""
+    cutoff = time.time() - KEEP_DAYS * 86_400
+    known = {r[0] for r in conn.execute("SELECT wav_path FROM dictations")}
+    pruned = 0
+    for wav in RECORDINGS_DIR.glob("*.wav"):
+        if wav.stat().st_mtime < cutoff and str(wav.resolve()) in known:
+            wav.unlink(missing_ok=True)
+            pruned += 1
+    if pruned:
+        print(f"Pruned {pruned} recording(s) older than {KEEP_DAYS:.0f} days"
+              " (transcripts kept).", flush=True)
+
+
 def cmd_watch(conn: sqlite3.Connection, copy_clipboard: bool = False,
               inject: bool = True) -> None:
     RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -303,8 +367,10 @@ def cmd_watch(conn: sqlite3.Connection, copy_clipboard: bool = False,
           + (" and copied to the clipboard" if copy_clipboard else "")
           + (" and typed into the focused app via Flow.app." if inject else "."))
     print("Warming up the transcription model...", flush=True)
+    prune_recordings(conn)
     known = {r[0] for r in conn.execute("SELECT wav_path FROM dictations")}
     since_learn = 0
+    last_prune = time.time()
     while True:
         for wav in sorted(RECORDINGS_DIR.glob("*.wav")):
             path = str(wav.resolve())
@@ -313,7 +379,8 @@ def cmd_watch(conn: sqlite3.Connection, copy_clipboard: bool = False,
             # skip files still being written (finalized files stop growing)
             if time.time() - wav.stat().st_mtime < 1.0:
                 continue
-            final = process(conn, path, notify_user=True, copy_clipboard=copy_clipboard)
+            final = process(conn, path, notify_user=True,
+                            copy_clipboard=copy_clipboard, meta=read_meta(path))
             if inject and final:
                 # Flow.app's outbox watcher picks this up and types it
                 (OUTBOX_DIR / f"{Path(path).stem}.txt").write_text(final)
@@ -322,6 +389,9 @@ def cmd_watch(conn: sqlite3.Connection, copy_clipboard: bool = False,
             if since_learn >= LEARN_EVERY:
                 learn(conn)
                 since_learn = 0
+        if time.time() - last_prune > 3600:
+            prune_recordings(conn)
+            last_prune = time.time()
         time.sleep(0.5)
 
 
@@ -398,7 +468,7 @@ def main() -> None:
     if args.cmd == "watch":
         cmd_watch(conn, copy_clipboard=args.copy, inject=not args.no_inject)
     elif args.cmd == "process":
-        process(conn, args.wav)
+        process(conn, args.wav, meta=read_meta(str(Path(args.wav).resolve())))
     elif args.cmd == "record":
         cmd_record(conn, args.seconds)
     elif args.cmd == "learn":

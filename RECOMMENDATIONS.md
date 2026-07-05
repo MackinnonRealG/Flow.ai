@@ -6,8 +6,12 @@ impact-per-effort within each tier.
 
 ## Tier 1 — do these next (biggest wins)
 
-> Status 2026-07-05: #2, #3, #4 done. #1 pending — blocked on installing
-> Xcode from the App Store (user action; no `mas` CLI on this machine).
+> Status 2026-07-05 (evening): #2–#10 done. #1 pending — blocked on
+> installing Xcode from the App Store (user action; no `mas` CLI here).
+> #11 stays deferred by design (FLOW_STT env override makes it drop-in).
+> #12 is an ongoing habit. #13: local commits done; GitHub push waiting on
+> confirmation that the authenticated gh account (MackinnonRealG) is yours:
+> `gh repo create Flow --private --source . --push`
 
 1. **Install Xcode, then move STT into the Swift app via FluidAudio CoreML.**
    The benchmark that decided our stack showed Parakeet on the Apple Neural

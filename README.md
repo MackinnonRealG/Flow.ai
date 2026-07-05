@@ -64,8 +64,18 @@ open app/Flow.app
 
 ## Daily use
 
-Hold **Right ⌥**, speak, release. ~4–5s later the cleaned text is typed into
-the focused app and a notification shows what was heard.
+Three interactions, all system-wide:
+
+- **Hold Right ⌥**, speak, release → cleaned text types into the focused app
+  (~2s for short utterances via the fast path, ~4–5s with LLM cleanup).
+- **Double-tap Right ⌥** → hands-free mode: keeps listening until you tap
+  Right ⌥ again or pause for ~2.5s (2 min cap).
+- **Select text, hold Right ⌘**, speak an instruction ("make this more
+  formal", "shorten this") → the edited text replaces the selection.
+
+A floating HUD pill shows each state (listening / transcribing / what was
+typed), plus the usual notification. Dictations are tone-matched to the app
+you're in (casual for Slack, professional for Mail).
 
 ```bash
 uv run flow.py watch           # the daemon (notifications + typing)
@@ -79,6 +89,8 @@ uv run flow.py dict-remove "..." ; uv run flow.py dict-list
 uv run flow.py record -s 10    # mic test without the app
 uv run flow.py process x.wav   # process an arbitrary audio file
 FLOW_LLM=qwen2.5:3b uv run flow.py watch   # faster, lower-fidelity cleanup
+FLOW_STT=mlx-community/parakeet-tdt-0.6b-v3 ...  # multilingual STT (drop-in)
+FLOW_KEEP_DAYS=7 ...           # audio retention (default 30 days; transcripts kept forever)
 ```
 
 ## The speech memory
@@ -133,8 +145,10 @@ heart of the product: filler removal, punctuation, spoken self-corrections
 - ✅ **M1** — menu-bar app: hold-to-talk hotkey + 16 kHz capture
 - ✅ **Logging + memory** — SQLite history, personal dictionary, style profile
 - ✅ **M2** — auto-typing into the focused app (hybrid: Python brain, Swift arm)
-- 🔶 **M3** — polish, in progress: LaunchAgents (always-on, self-healing) ✅,
+- 🔶 **M3** — polish: LaunchAgents (always-on, self-healing) ✅,
   short-utterance fast path (~1.5s, no LLM) ✅, learn-from-corrections
-  (`flow.py correct`) ✅; FluidAudio native STT pending Xcode install
-- ⬜ **M4** — context awareness: per-app tone matching
-- ⬜ **M5** — command mode: voice-edit selected text
+  (`flow.py correct`) ✅, HUD pill ✅, hands-free mode ✅, secure-input
+  guard ✅, audio retention ✅; FluidAudio native STT pending Xcode install
+- ✅ **M4** — context awareness: frontmost app captured per dictation,
+  tone-matching prompt injection
+- ✅ **M5** — command mode: select text + hold Right ⌘ + speak the edit
