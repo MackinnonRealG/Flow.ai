@@ -1,5 +1,110 @@
 # Flow
 
+<!-- HQ:META
+id: Flow
+name: Flow
+status: deployed
+completion: 85
+health: amber
+category: Personal Tooling
+stack: Swift (AppKit/AVFoundation), Python 3.12, Parakeet TDT 0.6B (MLX), Ollama qwen2.5:7b, SQLite, uv, launchd
+entry: flow.py (Python watcher daemon) + Flow.app (Swift menu-bar app)
+run: ./flowctl start
+github: https://github.com/MackinnonRealG/Flow.ai
+started: 2026-07
+last_verified: 2026-07-13
+connections: none
+value: Cloud-free, always-on voice dictation everywhere on the Mac — Wispr Flow's feel with zero data leaving the machine
+summary: A fully-local Wispr Flow clone for macOS — push-to-talk voice dictation with on-device STT (Parakeet/MLX) and LLM cleanup (Ollama), no cloud or API keys.
+-->
+
+> 🟡 **DEPLOYED** · **85% complete** · health amber · last verified 2026-07-13
+> A fully-local Wispr Flow clone for macOS — hold a key, speak, and cleaned-up text types itself into any app, with all speech-to-text and LLM cleanup running on-device.
+
+## What it is
+
+Flow is a personal, entirely offline dictation tool for macOS. You hold Right ⌥, speak, and release; the cleaned-up text types itself into whatever app has focus. Two cooperating processes do the work: a native Swift menu-bar app (`Flow.app`) that owns the global hotkey, mic capture, and text injection, and a Python watcher daemon (`flow.py`) that runs speech-to-text (Parakeet TDT 0.6B via MLX), cleans the transcript with a local Ollama LLM (`qwen2.5:7b`), and logs everything to a local SQLite database. No cloud, no accounts, no API keys — speech, transcripts, and history never leave the machine.
+
+## Status & completion — 85%
+
+**Works today:**
+- The full pipeline is **live and running right now** — menu-bar app, Python watcher, and Ollama are all up, with 12 real dictations logged across Slack, Mail, and iPhone (including a command-mode edit).
+- Push-to-talk (hold Right ⌥), hands-free (double-tap Right ⌥ + silence auto-stop), and command mode (select text + hold Right ⌘ to voice-edit) — all implemented in Swift and exercised.
+- On-device STT (Parakeet TDT 0.6B v2 / MLX) + Ollama `qwen2.5:7b` cleanup, with a sub-6-word "fast path" that skips the LLM for latency.
+- Speech memory: SQLite dictation history, an auto-learned personal dictionary, an LLM-written style profile, and user corrections — all injected into the cleanup prompt so accuracy compounds.
+- Context/tone matching (frontmost app captured per dictation), floating HUD pill, secure-input guard, 30-day audio retention, and iPhone dictation via an iCloud Drive inbox.
+- Installed to `/Applications/Flow.app`; both LaunchAgents installed; `flowctl` manages the whole stack.
+
+**Missing / not working:**
+- **Native in-app STT via FluidAudio CoreML** (M3's last item) — deferred, blocked on installing Xcode (SwiftPM is broken under this machine's Command Line Tools, so the app is built with plain `swiftc`). The Python/MLX path is a full working substitute (~0.5 s vs the ~0.19 s the native ANE path would deliver).
+- **No automated tests** anywhere in the repo (only a `test.wav` fixture). Correctness is validated by hand and by real use, not by a suite.
+- **Path fragility introduced by the HQ consolidation move.** The daemon hardcodes its data dir as `~/Flow` (`Path.home() / "Flow"`) and the watcher LaunchAgent's `WorkingDirectory` is `/Users/connorsandford/Flow`, but the project now lives under `HQ/projects/Flow` and `~/Flow` no longer exists on disk. The currently-running watcher survived only because it predates the move and followed the renamed directory's inode (its live cwd is the new path). A reboot or any KeepAlive restart will fail to relaunch it, and a manual `uv run flow.py watch` would create a fresh, empty `~/Flow` rather than use the repo's `flow.db`/`recordings/`. Not yet reconciled (would need a `~/Flow` symlink, or an updated plist + `FLOW_DIR`).
+
+**Why 85%:** All six milestones (M0–M5) plus logging/memory are functionally complete, backed by real usage data and an installed, running deployment — solidly in the "core works and runs, in use" band. It is held below 90 by the complete absence of automated tests and one acknowledged pending upgrade (native STT).
+
+**Health amber:** It runs and clearly works at this moment, but the recent relocation silently broke the "always-on, self-healing appliance" guarantee the docs advertise (the hardcoded `~/Flow` no longer resolves for launchd), and there is no test coverage. Green would need the path / LaunchAgent reconciliation and/or a test pass; it is not red because the product itself is intact and currently live.
+
+## Tech stack
+
+- **App:** native Swift (AppKit + AVFoundation), macOS 14+, built via `swiftc` (SwiftPM disabled on this machine), ad-hoc code-signed for a stable TCC identity.
+- **STT:** Parakeet TDT 0.6B v2 through `parakeet-mlx` (Apple MLX); `FLOW_STT` env var swaps in the multilingual v3 variant.
+- **Cleanup LLM:** Ollama `qwen2.5:7b` via `/api/generate` (temperature 0, `keep_alive: 2h`); `FLOW_LLM` env override for a smaller/faster model.
+- **Data:** SQLite (`flow.db`) — dictations, dictionary, profile, corrections.
+- **Python 3.12**, dependencies managed by `uv` (parakeet-mlx, numpy, sounddevice, soundfile, requests, numba, llvmlite).
+- **Always-on:** launchd LaunchAgents for the app and watcher. `ffmpeg` used for iPhone audio conversion and the test scripts.
+
+## How to run
+
+```bash
+# One-time setup
+brew install ollama ffmpeg && ollama pull qwen2.5:7b
+uv sync                                   # Python env
+./app/build-app.sh && open /Applications/Flow.app
+# then grant Microphone, Input Monitoring, and Accessibility in
+# System Settings -> Privacy & Security, and relaunch Flow.app
+
+# Bring the whole stack up (Ollama + Flow.app + Python watcher)
+./flowctl start
+./flowctl status        # see what's running
+./flowctl stop          # stop everything (returns at next login)
+
+# Manual watcher alternative (no launchd):
+uv run flow.py watch
+
+# Utilities
+uv run flow.py history -n 20
+uv run flow.py correct "La Calhest" "localhost"
+```
+
+Note: the daemon reads/writes `~/Flow` by default. After the HQ move that path no longer exists, so verify it (or create a symlink to `HQ/projects/Flow`) before relying on auto-launch — see "Missing / not working" above.
+
+## Project structure
+
+- `flow.py` — Python watcher daemon: Parakeet STT → Ollama cleanup → SQLite log → notify → outbox; also `learn` / `correct` / `history` / `dict-*` subcommands.
+- `m0_pipeline.py` — original M0 proof-of-concept, kept for reference.
+- `flowctl` — start/stop/restart/status wrapper over the launchd jobs + Ollama + app.
+- `app/Sources/Flow/*.swift` — menu-bar app: `HotkeyListener` (listen-only CGEventTap), `AudioRecorder` (AVAudioEngine, 16 kHz), `TextInjector` (clipboard paste + Accessibility), `HUD`, `AppDelegate` (hotkey state machine + outbox drain).
+- `app/build-app.sh` — compiles and installs `Flow.app` via `swiftc`.
+- `RESEARCH.md` — deep-research report on how Wispr Flow works + the original build plan.
+- `RECOMMENDATIONS.md` — prioritized roadmap (Tier 1–3) with status notes.
+- `flow.db`, `recordings/`, `outbox/`, `logs/` — private runtime data (gitignored); code expects these under `~/Flow`.
+- `pyproject.toml` / `uv.lock` — Python dependencies (uv-managed).
+- `~/Library/LaunchAgents/com.connorsandford.flow.{app,watcher}.plist` — always-on agents (installed).
+
+## Connections
+
+Flow is a standalone Personal Tooling utility with **no code-level integration** to other HQ projects — it shares no imports, services, or data with them (hence `connections: none`). Its relationship to the rest of the HQ is cross-cutting rather than structural: because it types into whatever app has focus, it can be used to dictate into any other project's editor, terminal, or chat while you work on it. It is versioned to its own private GitHub remote (`MackinnonRealG/Flow.ai`) and was recently folded into the HQ tree under `projects/Flow` by the repo-wide consolidation.
+
+## Log
+
+- 2026-07-13 — HQ README created; status assessed at 85% (deployed, health amber). Verified the app + watcher + Ollama are live with 12 real dictations logged; found the daemon and LaunchAgent still hardcode `~/Flow`, which the HQ consolidation move left dangling (documented above, not fixed — docs-only pass).
+
+## Original project notes
+
+_The project's original README, preserved verbatim below._
+
+# Flow
+
 A fully-local [Wispr Flow](https://wisprflow.ai) clone for macOS. Hold a key,
 speak, release — cleaned-up text types itself into whatever app you're using.
 No cloud, no accounts: speech-to-text, AI cleanup, and your entire dictation
